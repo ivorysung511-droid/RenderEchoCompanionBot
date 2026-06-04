@@ -1,6 +1,7 @@
 import os
 import logging
 import sys
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -47,10 +48,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """Log Errors caused by Updates."""
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
-# 5. Main Execution Block
-def main() -> None:
-    """Start the bot."""
-    # Retrieve token from Render Environment Variables
+# 5. Core Runner Logic
+async def run_bot() -> None:
+    """Initializes and runs the application polling loop."""
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     
     if not TOKEN:
@@ -58,21 +58,44 @@ def main() -> None:
         sys.exit(1)
 
     logger.info("Initializing Telegram Bot Application...")
-    
-    # Build the application
     application = Application.builder().token(TOKEN).build()
 
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_message))
-    
-    # Register error handler
     application.add_error_handler(error_handler)
 
-    # Start the Bot using Long Polling (Perfect for Background Workers)
     logger.info("Bot is starting polling... Ready for messages.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Initialize and start manually to safely manage loop inside newer Python environments
+    await application.initialize()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    await application.start()
+    
+    # Keep the worker running indefinitely
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Stopping bot safely...")
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+
+def main() -> None:
+    """Ensures a clean event loop exists and passes execution to the bot runner."""
+    try:
+        # Create a fresh event loop and set it to avoid the 'no current event loop' error
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run_bot())
+    except Exception as e:
+        logger.critical(f"Unhandled loop error: {e}", exc_info=True)
+    finally:
+        if 'loop' in locals() and loop.is_running():
+            loop.close()
 
 if __name__ == '__main__':
     main()
